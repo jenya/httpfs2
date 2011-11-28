@@ -77,6 +77,8 @@ typedef struct url {
     int port;
     char * path; /*get path*/
     char * name; /*file name*/
+    char * filename; /*content file name*/
+    int filename_from_header; /* take filename from HTTP header */
 #ifdef USE_AUTH
     char * auth; /*encoded auth data*/
 #endif
@@ -224,7 +226,7 @@ static void httpfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
     e.attr_timeout = 1.0;
     e.entry_timeout = 1.0;
 
-    if (parent != 1 || strcmp(name, main_url.name) != 0){
+    if (parent != 1 || strcmp(name, main_url.filename) != 0){
         e.ino = 0;
     } else {
         e.ino = 2;
@@ -283,7 +285,7 @@ static void httpfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
         memset(&b, 0, sizeof(b));
         dirbuf_add(req, &b, ".", 1);
         dirbuf_add(req, &b, "..", 1);
-        dirbuf_add(req, &b, main_url.name, 2);
+        dirbuf_add(req, &b, main_url.filename, 2);
         reply_buf_limited(req, b.p, b.size, off, size);
         free(b.p);
     }
@@ -340,6 +342,8 @@ static void httpfs_read(fuse_req_t req, fuse_ino_t ino, size_t size,
         url->req_buf_size = size;
         url->req_buf = malloc(size);
     }
+
+    fprintf(stderr, "httpfs_read: size: %d b (%d kb), off: %d b (%d kb)\n", url->req_buf_size, url->req_buf_size/1024, (int)off, (int)(off/1024));
 
     if((res = get_data(url, off, size)) < 0){
         assert(errno);
@@ -433,6 +437,7 @@ static void print_url(FILE *f, const struct_url * url)
             break;;
     }
     fprintf(f, "file name: \t%s\n", url->name);
+    fprintf(f, "content file name: \t%s\n", url->filename);
     fprintf(f, "host name: \t%s\n", url->host);
     fprintf(f, "port number: \t%d\n", url->port);
     fprintf(f, "protocol: \t%s\n", protocol);
@@ -520,6 +525,7 @@ static int parse_url(const char * url, struct_url* res)
             url = strchr(url, '/') + 1;
         res->name = strndup(url, (size_t)(end - url));
     }
+    res->filename = res->name;
 
     return res->proto;
 }
@@ -533,6 +539,7 @@ static void usage(void)
 #ifdef RETRY_ON_RESET
         fprintf(stderr, "\t -r \tretry connection on reset\n");
 #endif
+        fprintf(stderr, "\t -n \ttake filename from HTTP header (default: from url)\n");
         fprintf(stderr, "\t -t \tset socket timeout in seconds (default: %i)\n", TIMEOUT);
         fprintf(stderr, "\tmount-parameters should include the mount point\n");
 }
@@ -558,6 +565,8 @@ int main(int argc, char *argv[])
                           }else{
                               fork_terminal = 0;
                           }
+                          break;
+                case 'n': main_url.filename_from_header = 1;
                           break;
 #ifdef RETRY_ON_RESET
                 case 'r': main_url.retry_reset = 1;
@@ -596,7 +605,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "invalid url: %s\n", argv[1]);
         return 2;
     }
-    print_url(stderr, &main_url);
+    //print_url(stderr, &main_url);
     int sockfd = open_client_socket(&main_url);
     if(sockfd < 0) {
         fprintf(stderr, "Connection failed.\n");
@@ -605,6 +614,7 @@ int main(int argc, char *argv[])
     close_client_socket(&main_url);
     struct stat st;
     off_t size = get_stat(&main_url, &st);
+    print_url(stderr, &main_url);
     if(size >= 0) {
         fprintf(stderr, "file size: \t%" PRIdMAX "\n", (intmax_t)size);
     }else{
@@ -938,7 +948,7 @@ parse_header(struct_url *url, const char * buf, size_t bytes,
     int status;
     const char * ptr = buf;
     const char * end;
-    int seen_accept = 0, seen_length = 0, seen_close = 0;
+    int seen_accept = 0, seen_length = 0, seen_close = 0, seen_filename = 0;
 
     if (bytes <= 0) {
         return -1;
@@ -984,6 +994,7 @@ parse_header(struct_url *url, const char * buf, size_t bytes,
     char * content_length_str = "Content-Length: ";
     char * accept = "Accept-Ranges: bytes";
     char * date = "Last-Modified: ";
+    char * content_disposition_str = "Content-Disposition: attachment; filename=\"";
     char * close = "Connection: close";
     struct tm tm;
     while(1)
@@ -1019,6 +1030,13 @@ parse_header(struct_url *url, const char * buf, size_t bytes,
             seen_accept = 1;
             continue;
         }
+        if (url->filename_from_header)
+            if(mempref(ptr, content_disposition_str, (size_t)(end - ptr)) ){
+                url->filename = strdup(ptr + strlen(content_disposition_str)+1);
+                url->filename = strndup(ptr + strlen(content_disposition_str), (size_t)(strchr(url->filename, 0x0A)-url->filename-1));
+                seen_filename = 1;
+                continue;
+            }
         if( mempref(ptr, date, (size_t)(end - ptr)) ){
             memset(&tm, 0, sizeof(tm));
             if(!strptime(ptr + strlen(date),
