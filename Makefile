@@ -14,7 +14,7 @@ binbase = httpfs2
 
 binaries = $(addsuffix $(binsuffix),$(binbase))
 
-manpages = $(addsuffix .1,$(binaries))
+#manpages = $(addsuffix .1,$(binaries))
 
 intermediates += $(addsuffix .xml,$(manpages))
 
@@ -53,43 +53,4 @@ clean_recursive:
 
 %_rst: $*
 	$(MAKE) CPPFLAGS="$(CPPFLAGS) -DRETRY_ON_RESET" binsuffix=_rst$(binsuffix) $*
-
-# Rules to automatically make a Debian package
-
-package = $(shell dpkg-parsechangelog | grep ^Source: | sed -e s,'^Source: ',,)
-version = $(shell dpkg-parsechangelog | grep ^Version: | sed -e s,'^Version: ',, -e 's,-.*,,')
-revision = $(shell dpkg-parsechangelog | grep ^Version: | sed -e -e 's,.*-,,')
-architecture = $(shell dpkg --print-architecture)
-tar_dir = $(package)-$(version)
-tar_gz   = $(tar_dir).tar.gz
-pkg_deb_dir = pkgdeb
-unpack_dir  = $(pkg_deb_dir)/$(tar_dir)
-orig_tar_gz = $(pkg_deb_dir)/$(package)_$(version).orig.tar.gz
-pkg_deb_src = $(pkg_deb_dir)/$(package)_$(version)-$(revision)_source.changes
-pkg_deb_bin = $(pkg_deb_dir)/$(package)_$(version)-$(revision)_$(architecture).changes
-
-deb_pkg_key = CB8C5858
-
-debclean:
-	rm -rf $(pkg_deb_dir)
-
-deb: debsrc debbin
-
-debbin: $(unpack_dir)
-	cd $(unpack_dir) && dpkg-buildpackage -b -k$(deb_pkg_key)
-
-debsrc: $(unpack_dir)
-	cd $(unpack_dir) && dpkg-buildpackage -S -k$(deb_pkg_key)
-
-$(unpack_dir): $(orig_tar_gz)
-	tar -zxf $(orig_tar_gz) -C $(pkg_deb_dir)
-
-$(pkg_deb_dir):
-	mkdir $(pkg_deb_dir)
-
-$(pkg_deb_dir)/$(tar_gz): $(pkg_deb_dir)
-	hg archive -t tgz $(pkg_deb_dir)/$(tar_gz)
-
-$(orig_tar_gz): $(pkg_deb_dir)/$(tar_gz)
-	ln -s $(tar_gz) $(orig_tar_gz)
 
